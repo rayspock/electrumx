@@ -33,6 +33,8 @@ from electrumx.lib.hash import (sha256, hash_to_hex_str, hex_str_to_hash,
 from electrumx.lib.peer import Peer
 from electrumx.server.daemon import DaemonError
 from electrumx.server.peers import PeerManager
+from aiohttp import web
+from electrumx.server.http_session import HttpHandler
 
 
 BAD_REQUEST = 1
@@ -144,22 +146,42 @@ class SessionManager(object):
 
     async def _start_server(self, kind, *args, **kw_args):
         loop = asyncio.get_event_loop()
-        if kind == 'RPC':
-            protocol_class = LocalRPC
+        if kind == 'HTTP':
+            host, port = args[:2]
+            try:
+                app = web.Application()
+                handler = HttpHandler(self, self.db, self.mempool, self.peer_mgr, kind)
+                app.router.add_get('/utils/estimatefee', handler.estimatefee)
+                app.router.add_post('/tx/send', handler.send_transaction)
+                app.router.add_get('/addrs/{addrs}/utxo', handler.address_listunspent)
+                app.router.add_get('/addr/{addr}', handler.address)
+                app.router.add_get('/addrs/{addrs}/txs', handler.history)
+                runner = web.AppRunner(app)
+                await runner.setup()
+                site = web.TCPSite(runner, host, port)
+                await site.start()
+            except Exception as e:
+                self.logger.error(f'{kind} server failed to listen on {host}:'
+                                  f'{port:d} :{e!r}')
+            else:
+                self.logger.info(f'{kind} server listening on {host}:{port:d}')
         else:
-            protocol_class = self.env.coin.SESSIONCLS
-        protocol_factory = partial(protocol_class, self, self.db,
-                                   self.mempool, self.peer_mgr, kind)
-        server = loop.create_server(protocol_factory, *args, **kw_args)
+            if kind == 'RPC':
+                protocol_class = LocalRPC
+            else:
+                protocol_class = self.env.coin.SESSIONCLS
+            protocol_factory = partial(protocol_class, self, self.db,
+                                       self.mempool, self.peer_mgr, kind)
+            server = loop.create_server(protocol_factory, *args, **kw_args)
 
-        host, port = args[:2]
-        try:
-            self.servers[kind] = await server
-        except OSError as e:    # don't suppress CancelledError
-            self.logger.error(f'{kind} server failed to listen on {host}:'
-                              f'{port:d} :{e!r}')
-        else:
-            self.logger.info(f'{kind} server listening on {host}:{port:d}')
+            host, port = args[:2]
+            try:
+                self.servers[kind] = await server
+            except OSError as e:    # don't suppress CancelledError
+                self.logger.error(f'{kind} server failed to listen on {host}:'
+                                  f'{port:d} :{e!r}')
+            else:
+                self.logger.info(f'{kind} server listening on {host}:{port:d}')
 
     async def _start_external_servers(self):
         '''Start listening on TCP and SSL ports, but only if the respective
@@ -167,6 +189,8 @@ class SessionManager(object):
         '''
         env = self.env
         host = env.cs_host(for_rpc=False)
+        if env.http_port is not None:
+            await self._start_server('HTTP', host, env.http_port)
         if env.tcp_port is not None:
             await self._start_server('TCP', host, env.tcp_port)
         if env.ssl_port is not None:

@@ -47,6 +47,7 @@ class Env(EnvBase):
         self.host = self.default('HOST', 'localhost')
         self.reorg_limit = self.integer('REORG_LIMIT', self.coin.REORG_LIMIT)
         # Server stuff
+        self.http_port = self.integer('HTTP_PORT', None)
         self.tcp_port = self.integer('TCP_PORT', None)
         self.ssl_port = self.integer('SSL_PORT', None)
         if self.ssl_port:
