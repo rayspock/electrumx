@@ -7,6 +7,8 @@ from electrumx.lib.hash import hash_to_hex_str
 import electrumx.lib.util as util
 
 BAD_REQUEST = 1
+MAX_TX_QUERY = 50
+
 class HttpHandler(object):
 
     def __init__(self, session_mgr, db, mempool, peer_mgr, kind):
@@ -50,7 +52,7 @@ class HttpHandler(object):
         addrs = request.match_info.get('addrs', '')
         if not addrs:
             return web.Response(status=404)
-        list_addr = addrs.split(',')
+        list_addr = list(dict.fromkeys(addrs.split(',')))
         list_tx = list()
         for address in list_addr:
             hashX = self.address_to_hashX(address)
@@ -71,18 +73,43 @@ class HttpHandler(object):
         return web.json_response(res)
 
     async def history(self, request):
+        '''Query parameters check.'''
         addrs = request.match_info.get('addrs', '')
+        query_str = request.rel_url.query
+        query_from = util.parse_int(query_str['from'], 0) if 'from' in query_str else 0
+        query_to = util.parse_int(query_str['to'], MAX_TX_QUERY) if 'to' in query_str else MAX_TX_QUERY
+        if query_from < 0:
+            return web.Response(status=503, text=f'Invalid state: "from" ({query_from}) is expected to be greater '
+            f'than or equal to 0')
+
+        if query_to < 0:
+            return web.Response(status=503, text=f'Invalid state: "to" ({query_to}) is expected to be greater '
+            f'than or equal to 0')
+
+        if query_from > query_to:
+            return web.Response(status=503, text=f'Invalid state: "from" ({query_from}) is '
+            f'expected to be less than "to" ({query_to})')
+
         if not addrs:
             return web.Response(status=404)
-        list_addr = addrs.split(',')
+
+        query_to = query_to if query_to - query_from < MAX_TX_QUERY else query_from + MAX_TX_QUERY
+
+        list_addr = list(dict.fromkeys(addrs.split(',')))
         items = list()
+        list_history = []
         for address in list_addr:
-            list_history = await self.address_get_history(address)
-            for item in list_history:
-                blockheight = item["height"]
-                tx_detail = await self.transaction_get(item["tx_hash"], True)
-                items.append(await self.wallet_history(blockheight, tx_detail))
-        res = {"totalItems": len(items),
+            list_history = list_history + await self.address_get_history(address)
+        for i in range(len(list_history)):
+            if i < query_from or i >= query_to:
+                continue
+            item = list_history[i]
+            blockheight = item["height"]
+            tx_detail = await self.transaction_get(item["tx_hash"], True)
+            items.append(await self.wallet_history(blockheight, tx_detail))
+        res = {"totalItems": len(list_history),
+               "from": query_from,
+               "to": query_to,
                "items": items}
         jsonStr = json.dumps(res, cls=DecimalEncoder)
         return web.json_response(json.loads(jsonStr))
@@ -201,7 +228,7 @@ class HttpHandler(object):
         history = await self.session_mgr.limited_history(hashX)
         conf = [{'tx_hash': hash_to_hex_str(tx_hash), 'height': height}
                 for tx_hash, height in history]
-        return conf + await self.unconfirmed_history(hashX)
+        return await self.unconfirmed_history(hashX) + conf
 
     def assert_tx_hash(self, value):
         '''Raise an RPCError if the value is not a valid transaction
