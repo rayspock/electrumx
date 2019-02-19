@@ -142,7 +142,11 @@ class HttpHandler(object):
             pos = abs(min_places)
         else:
             pos = 0
-        fees = round(value_in - value_out, pos)
+        if value_in > 0:
+            fees = round(value_in - value_out, pos)
+        else:
+            '''from Block Reward'''
+            fees = 0
 
         return {"txid": txid,
                 "blockheight": blockheight,
@@ -155,19 +159,24 @@ class HttpHandler(object):
                 "time": time}
 
     async def vin_factory(self, obj):
-        txid = obj["txid"]
-        vout = obj["vout"]
-        tx_detail = await self.transaction_get(txid, True)
-        list_vout = tx_detail["vout"]
-        prev_vout = list_vout[vout]
-        value = prev_vout["value"]
-        addr = prev_vout["scriptPubKey"]["addresses"][0]
-        return {
-            "txid": txid,
-            "addr": addr,
-            "valueSat": value * self.coin.VALUE_PER_COIN,
-            "value": value
-        }
+        if 'txid' in obj:
+            txid = obj["txid"]
+            vout = obj["vout"]
+            tx_detail = await self.transaction_get(txid, True)
+            list_vout = tx_detail["vout"]
+            prev_vout = list_vout[vout]
+            value = prev_vout["value"]
+            addr = prev_vout["scriptPubKey"]["addresses"][0]
+            return {
+                "txid": txid,
+                "addr": addr,
+                "valueSat": value * self.coin.VALUE_PER_COIN,
+                "value": value
+            }
+        else:
+            '''from Block Reward'''
+            obj["value"] = 0
+            return obj
 
     async def wallet_unspent(self, address, utxo, tx_detail):
         height = utxo["height"]
@@ -175,18 +184,25 @@ class HttpHandler(object):
         vout = utxo["tx_pos"]
         confirmations = tx_detail["confirmations"] if 'confirmations' in tx_detail else 0
         list_vout = tx_detail["vout"]
-        list = [item for item in list_vout if
-                item["scriptPubKey"]["addresses"][0] == address]
-        if len(list) > 0:
-            obj = list[0]
+        list_pick = []
+        self.logger.info(f'vout:{list_vout}')
+        for item in list_vout:
+            '''In case some vout will contain OP_RETURN and no addresses key'''
+            addr = item["scriptPubKey"]["addresses"][0] if 'addresses' in item["scriptPubKey"] else ""
+            n = item["n"] if 'n' in item else ""
+            if addr == address or (addr == "" and n == vout):
+                list_pick.append(item)
+
+        if len(list_pick) > 0:
+            obj = list_pick[0]
             amount = obj["value"]
-            scriptPubKey = obj["scriptPubKey"]["hex"]
+            script_pub_key = obj["scriptPubKey"]["hex"]
         else:
-            raise Exception('cannot get the transaction\'s list of outputs')
+            raise Exception(f'cannot get the transaction\'s list of outputs from address:{address}')
         return {"address": address,
                 "txid": tx_detail["txid"],
                 "vout": vout,
-                "scriptPubKey": scriptPubKey,
+                "scriptPubKey": script_pub_key,
                 "amount": amount,
                 "satoshis": satoshis,
                 "height": height,
