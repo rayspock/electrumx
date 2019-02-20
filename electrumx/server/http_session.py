@@ -9,6 +9,7 @@ import electrumx.lib.util as util
 BAD_REQUEST = 1
 MAX_TX_QUERY = 50
 
+
 class HttpHandler(object):
 
     def __init__(self, session_mgr, db, mempool, peer_mgr, kind):
@@ -28,14 +29,9 @@ class HttpHandler(object):
         self.daemon_request = self.session_mgr.daemon_request
 
     async def estimatefee(self, request):
-        self.logger.info('get estimatefee')
-        try:
-            fee = await self.daemon_request('estimatefee', 2)
-        except Exception as ex:
-            return web.Response(status=500, text=str(ex))
-        else:
-            res = {"2": format(fee, '.8f')}
-            return web.json_response(res)
+        fee = await self.daemon_request('estimatefee', 2)
+        res = {"2": format(fee, '.8f')}
+        return web.json_response(res)
 
     async def send_transaction(self, request):
         body = await request.json()
@@ -79,15 +75,15 @@ class HttpHandler(object):
         query_from = util.parse_int(query_str['from'], 0) if 'from' in query_str else 0
         query_to = util.parse_int(query_str['to'], MAX_TX_QUERY) if 'to' in query_str else MAX_TX_QUERY
         if query_from < 0:
-            return web.Response(status=503, text=f'Invalid state: "from" ({query_from}) is expected to be greater '
+            return web.Response(status=400, text=f'Invalid state: "from" ({query_from}) is expected to be greater '
             f'than or equal to 0')
 
         if query_to < 0:
-            return web.Response(status=503, text=f'Invalid state: "to" ({query_to}) is expected to be greater '
+            return web.Response(status=400, text=f'Invalid state: "to" ({query_to}) is expected to be greater '
             f'than or equal to 0')
 
         if query_from > query_to:
-            return web.Response(status=503, text=f'Invalid state: "from" ({query_from}) is '
+            return web.Response(status=400, text=f'Invalid state: "from" ({query_from}) is '
             f'expected to be less than "to" ({query_to})')
 
         if not addrs:
@@ -129,7 +125,7 @@ class HttpHandler(object):
             else:
                 time = None
         if time is None:
-            return web.Response(status=500, text='cannot get the transaction\'s time')
+            raise RPCError(BAD_REQUEST, f'cannot get the transaction\'s time')
         list_vin = tx_detail["vin"]
         list_vout = tx_detail["vout"]
         list_final_vin = [await self.vin_factory(item) for item in list_vin]
