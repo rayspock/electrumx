@@ -35,6 +35,7 @@ from electrumx.server.daemon import DaemonError
 from electrumx.server.peers import PeerManager
 from aiohttp import web
 from electrumx.server.http_session import HttpHandler
+from electrumx.server.exception_mapper import error_middleware
 
 
 BAD_REQUEST = 1
@@ -149,7 +150,7 @@ class SessionManager(object):
         if kind == 'HTTP':
             host, port = args[:2]
             try:
-                app = web.Application()
+                app = web.Application(middlewares=[error_middleware(self)])
                 handler = HttpHandler(self, self.db, self.mempool, self.peer_mgr, kind)
                 app.router.add_get('/utils/estimatefee', handler.estimatefee)
                 app.router.add_post('/tx/send', handler.send_transaction)
