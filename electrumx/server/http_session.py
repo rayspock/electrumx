@@ -29,8 +29,10 @@ class HttpHandler(object):
         self.daemon_request = self.session_mgr.daemon_request
 
     async def estimatefee(self, request):
-        fee = await self.daemon_request('estimatefee', 2)
-        res = {"2": format(fee, '.8f')}
+        query_str = request.rel_url.query
+        nb = util.parse_int(query_str['nbBlocks'], 2) if 'nbBlocks' in query_str else 2
+        fee = await self.daemon_request('estimatefee', nb)
+        res = {str(nb): format(fee, '.8f')}
         return web.json_response(res)
 
     async def send_transaction(self, request):
@@ -63,8 +65,12 @@ class HttpHandler(object):
         if not addr:
             return web.Response(status=404)
         addr_balance = await self.address_get_balance(addr)
+        confirmed_sat = addr_balance["confirmed"]
+        unconfirmed_sat = addr_balance["unconfirmed"]
         res = {"addrStr": addr,
-               "balanceSat": addr_balance["confirmed"],
+               "balance": float(self.coin.decimal_value(confirmed_sat)),
+               "balanceSat": confirmed_sat,
+               "unconfirmedBalance": float(self.coin.decimal_value(unconfirmed_sat)),
                "unconfirmedBalanceSat": addr_balance["unconfirmed"]}
         return web.json_response(res)
 

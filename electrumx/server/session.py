@@ -156,6 +156,7 @@ class SessionManager(object):
                 app.router.add_post('/tx/send', handler.send_transaction)
                 app.router.add_get('/addrs/{addrs}/utxo', handler.address_listunspent)
                 app.router.add_get('/addr/{addr}', handler.address)
+                app.router.add_get('/addr/{addr}/', handler.address)
                 app.router.add_get('/addrs/{addrs}/txs', handler.history)
                 runner = web.AppRunner(app)
                 await runner.setup()
