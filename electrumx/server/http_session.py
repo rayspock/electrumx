@@ -187,7 +187,6 @@ class HttpHandler(object):
         confirmations = tx_detail["confirmations"] if 'confirmations' in tx_detail else 0
         list_vout = tx_detail["vout"]
         list_pick = []
-        self.logger.info(f'vout:{list_vout}')
         for item in list_vout:
             '''In case some vout will contain OP_RETURN and no addresses key'''
             addr = item["scriptPubKey"]["addresses"][0] if 'addresses' in item["scriptPubKey"] else ""
