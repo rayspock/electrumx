@@ -91,7 +91,7 @@ class Controller(ServerBase):
         self.logger.info(f'supported protocol versions: {min_str}-{max_str}')
         self.logger.info(f'event loop policy: {env.loop_policy}')
         self.logger.info(f'reorg limit is {env.reorg_limit:,d} blocks')
-        self.logger.info(f'sparkAPI version: 1.1.1')
+        self.logger.info(f'sparkAPI version: 1.1.2')
 
         notifications = Notifications()
         Daemon = env.coin.DAEMON
