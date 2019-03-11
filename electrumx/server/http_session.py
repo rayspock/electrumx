@@ -241,11 +241,12 @@ class HttpHandler(object):
                 for tx in await self.mempool.transaction_summaries(hashX)]
 
     async def confirmed_and_unconfirmed_history(self, hashX):
+        '''latest in the blockchain first.'''
         # Note history is ordered but unconfirmed is unordered in e-s
         history = await self.session_mgr.limited_history(hashX)
         conf = [{'tx_hash': hash_to_hex_str(tx_hash), 'height': height}
                 for tx_hash, height in history]
-        return await self.unconfirmed_history(hashX) + conf
+        return await self.unconfirmed_history(hashX) + list(reversed(conf))
 
     def assert_tx_hash(self, value):
         '''Raise an RPCError if the value is not a valid transaction
