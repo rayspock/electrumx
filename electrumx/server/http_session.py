@@ -243,7 +243,7 @@ class HttpHandler(object):
     async def confirmed_and_unconfirmed_history(self, hashX):
         '''latest in the blockchain first.'''
         # Note history is ordered but unconfirmed is unordered in e-s
-        history = await self.session_mgr.limited_history(hashX)
+        history = await self.session_mgr.history(hashX)
         conf = [{'tx_hash': hash_to_hex_str(tx_hash), 'height': height}
                 for tx_hash, height in history]
         return await self.unconfirmed_history(hashX) + list(reversed(conf))

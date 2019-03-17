@@ -583,6 +583,13 @@ class SessionManager(object):
             hc[hashX] = await self.db.limited_history(hashX, limit=limit)
         return hc[hashX]
 
+    async def history(self, hashX):
+        '''A caching layer.'''
+        hc = self.history_cache
+        if hashX not in hc:
+            hc[hashX] = await self.db.limited_history(hashX, limit=None)
+        return hc[hashX]
+
     async def _notify_sessions(self, height, touched):
         '''Notify sessions about height changes and touched addresses.'''
         height_changed = height != self.notified_height
