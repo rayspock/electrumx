@@ -35,6 +35,9 @@ from electrumx.lib.hash import (sha256, hash_to_hex_str, hex_str_to_hash,
                                 HASHX_LEN, Base58Error)
 from electrumx.server.daemon import DaemonError
 from electrumx.server.peers import PeerManager
+from aiohttp import web
+from electrumx.server.http_session import HttpHandler
+from electrumx.server.exception_mapper import error_middleware
 
 
 BAD_REQUEST = 1
@@ -160,29 +163,49 @@ class SessionManager:
     async def _start_servers(self, services):
         for service in services:
             kind = service.protocol.upper()
-            if service.protocol in self.env.SSL_PROTOCOLS:
-                sslc = self._ssl_context()
+            if service.protocol == 'http':
+                host = None if service.host == 'all_interfaces' else str(service.host)
+                try:
+                    app = web.Application(middlewares=[error_middleware(self)])
+                    handler = HttpHandler(self, self.db, self.mempool, self.peer_mgr, kind)
+                    app.router.add_get('/utils/estimatefee', handler.estimatefee)
+                    app.router.add_post('/tx/send', handler.send_transaction)
+                    app.router.add_get('/addrs/{addrs}/utxo', handler.address_listunspent)
+                    app.router.add_get('/addr/{addr}', handler.address)
+                    app.router.add_get('/addr/{addr}/', handler.address)
+                    app.router.add_get('/addrs/{addrs}/txs', handler.history)
+                    runner = web.AppRunner(app)
+                    await runner.setup()
+                    site = web.TCPSite(runner, host, service.port)
+                    await site.start()
+                except Exception as e:
+                    self.logger.error(f'{kind} server failed to listen on {service.address}: {e}')
+                else:
+                    self.logger.info(f'{kind} server listening on {service.address}')
             else:
-                sslc = None
-            if service.protocol == 'rpc':
-                session_class = LocalRPC
-            else:
-                session_class = self.env.coin.SESSIONCLS
-            if service.protocol in ('ws', 'wss'):
-                serve = serve_ws
-            else:
-                serve = serve_rs
-            # FIXME: pass the service not the kind
-            session_factory = partial(session_class, self, self.db, self.mempool,
-                                      self.peer_mgr, kind)
-            host = None if service.host == 'all_interfaces' else str(service.host)
-            try:
-                self.servers[service] = await serve(session_factory, host,
-                                                    service.port, ssl=sslc)
-            except OSError as e:    # don't suppress CancelledError
-                self.logger.error(f'{kind} server failed to listen on {service.address}: {e}')
-            else:
-                self.logger.info(f'{kind} server listening on {service.address}')
+                if service.protocol in self.env.SSL_PROTOCOLS:
+                    sslc = self._ssl_context()
+                else:
+                    sslc = None
+                if service.protocol == 'rpc':
+                    session_class = LocalRPC
+                else:
+                    session_class = self.env.coin.SESSIONCLS
+                if service.protocol in ('ws', 'wss'):
+                    serve = serve_ws
+                else:
+                    serve = serve_rs
+                # FIXME: pass the service not the kind
+                session_factory = partial(session_class, self, self.db, self.mempool,
+                                          self.peer_mgr, kind)
+                host = None if service.host == 'all_interfaces' else str(service.host)
+                try:
+                    self.servers[service] = await serve(session_factory, host,
+                                                        service.port, ssl=sslc)
+                except OSError as e:    # don't suppress CancelledError
+                    self.logger.error(f'{kind} server failed to listen on {service.address}: {e}')
+                else:
+                    self.logger.info(f'{kind} server listening on {service.address}')
 
     async def _start_external_servers(self):
         '''Start listening on TCP and SSL ports, but only if the respective
@@ -728,6 +751,13 @@ class SessionManager:
         if isinstance(result, Exception):
             raise result
         return result, cost
+
+    async def history(self, hashX):
+        '''A caching layer.'''
+        hc = self._history_cache
+        if hashX not in hc:
+            hc[hashX] = await self.db.limited_history(hashX, limit=None)
+        return hc[hashX]
 
     async def _notify_sessions(self, height, touched):
         '''Notify sessions about height changes and touched addresses.'''

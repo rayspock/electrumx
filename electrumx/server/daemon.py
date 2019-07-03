@@ -228,6 +228,9 @@ class Daemon(object):
         '''Update our record of the daemon's mempool hashes.'''
         return await self._send_single('getrawmempool')
 
+    async def getrawmempool(self, verbose=False):
+        return await self._send_single('getrawmempool', [verbose])
+
     async def estimatefee(self, block_count):
         '''Return the fee estimate for the block count.  Units are whole
         currency units per KB, e.g. 0.00000995, or -1 if no estimate

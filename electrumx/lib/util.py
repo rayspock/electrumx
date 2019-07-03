@@ -342,3 +342,24 @@ def pack_varint(n):
 
 def pack_varbytes(data):
     return pack_varint(len(data)) + data
+
+
+def ignore_exception(IgnoreException=Exception, DefaultVal=None):
+    '''
+    Decorator for ignoring exception from a function
+    e.g.   @ignore_exception(DivideByZero)
+    e.g.2. ignore_exception(DivideByZero)(Divide)(2/0)
+    '''
+    def dec(function):
+        def _dec(*args, **kwargs):
+            try:
+                return function(*args, **kwargs)
+            except IgnoreException:
+                return DefaultVal
+        return _dec
+    return dec
+
+
+def parse_int(s, DefaultVal=0):
+    return ignore_exception(ValueError, DefaultVal)(int)(s)
+
