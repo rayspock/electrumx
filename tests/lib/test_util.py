@@ -216,3 +216,12 @@ def test_pack_varbytes():
         data = util.pack_varbytes(test)
         deser = tx.Deserializer(data)
         assert deser._read_varbytes() == test
+
+def test_ignore_exception():
+    parse_int = util.ignore_exception(ValueError, 0)(int)
+    assert parse_int("Apple") == 0
+    assert parse_int("65535") == 65535
+
+def test_parse_int():
+    assert util.parse_int("0A1B2C3DEF", 10) == 10
+    assert util.parse_int("252", 0) == 252

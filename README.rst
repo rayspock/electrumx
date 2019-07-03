@@ -18,5 +18,6 @@ Documentation
 
 See `readthedocs <https://electrumx.readthedocs.io/>`_.
 
+RESTful API `docs <https://gist.github.com/rayspock/bc03bd20c554714518e22c5ba4aab6d6>`_.
 
 **Neil Booth**  kyuupichan@gmail.com  https://github.com/kyuupichan
