@@ -242,6 +242,12 @@ class Daemon(object):
             return estimate.get('feerate', -1)
         return await self._send_single('estimatefee', args)
 
+    async def estimatefeenoarg(self):
+        if await self._is_rpc_available('estimatesmartfee'):
+            estimate = await self._send_single('estimatesmartfee')
+            return estimate.get('feerate', -1)
+        return await self._send_single('estimatefee')
+
     async def getnetworkinfo(self):
         '''Return the result of the 'getnetworkinfo' RPC call.'''
         return await self._send_single('getnetworkinfo')

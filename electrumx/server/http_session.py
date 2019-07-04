@@ -29,9 +29,12 @@ class HttpHandler(object):
 
     async def estimatefee(self, request):
         query_str = request.rel_url.query
-        nb = util.parse_int(query_str['nbBlocks'], 2) if 'nbBlocks' in query_str else 2
-        fee = await self.daemon_request('estimatefee', nb)
-        res = {str(nb): format(fee, '.8f')}
+        nb = util.parse_int(query_str['nbBlocks'], 2) if 'nbBlocks' in query_str else None
+        if nb is not None:
+            fee = await self.daemon_request('estimatefee', nb)
+        else:
+            fee = await self.daemon_request('estimatefeenoarg')
+        res = {"fee": format(fee, '.8f')}
         return web.json_response(res)
 
     async def send_transaction(self, request):
