@@ -43,7 +43,7 @@ class Daemon(object):
     WARMING_UP = -28
     id_counter = itertools.count()
 
-    def __init__(self, coin, url, *, max_workqueue=10, init_retry=0.25, max_retry=4.0):
+    def __init__(self, coin, url, *, max_workqueue=16, init_retry=0.25, max_retry=4.0):
         self.coin = coin
         self.logger = class_logger(__name__, self.__class__.__name__)
         self.url_index = None
@@ -278,6 +278,23 @@ class Daemon(object):
         # Convert hex strings to bytes
         return [hex_to_bytes(tx) if tx else None for tx in txs]
 
+    async def getdetailedtransactions(self, hex_hashes, replace_errs=True):
+        '''
+        Return the serialized raw transactions with the given hashes.\n
+        Replaces errors with None by default.\n
+        Similar to getrawtransactions except that it asks for verbose response
+        '''
+        params_iterable = ((hex_hash, 1) for hex_hash in hex_hashes)
+        return await self._send_vector('getrawtransaction', params_iterable, replace_errs=replace_errs)
+    
+    async def getdescriptorsinfo(self, descriptors, script_type, replace_errs=True):
+        params_iterable = ([f'{script_type}({descriptor})'] for descriptor in descriptors)
+        return await self._send_vector('getdescriptorinfo', params_iterable, replace_errs=replace_errs)
+    
+    async def getderiveaddresses(self, descriptors, replace_errs=True):
+        params_iterable = ([f'{descriptor}'] for descriptor in descriptors)
+        return await self._send_vector('deriveaddresses', params_iterable, replace_errs=replace_errs)
+    
     async def broadcast_transaction(self, raw_tx):
         '''Broadcast a transaction to the network.'''
         return await self._send_single('sendrawtransaction', (raw_tx, ))
