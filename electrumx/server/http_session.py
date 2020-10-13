@@ -90,7 +90,6 @@ class HttpHandler(object):
         The first step is to get pairs of tx_hash and block_height as history provided by electrumx.
         The second step is to ask coin core for transaction details.
         '''
-        
         # path variable
         addrs = request.match_info.get('addrs', '')
         if not addrs:
@@ -119,25 +118,25 @@ class HttpHandler(object):
         if query_to > query_from + MAX_TX_QUERY:
             query_to = query_from + MAX_TX_QUERY
 
-        '''
-        first step
-        '''
         tasks_fetch_tuples = []
         for addr in addrs.split(','):
             # query electrumx history db
-            tasks_fetch_tuples.append(self.get_history_by_address(addr))
+            tasks_fetch_tuples.append(self.get_history(addr))
             
         list_history_by_address = await asyncio.gather(*tasks_fetch_tuples)
         list_joined_history = [ entry for per_address in list_history_by_address for entry in per_address ]
         
         max_height = max([ entry['height'] for entry in list_joined_history ])
-        list_joined_history.sort(key=lambda x: x['height'] if x['height'] != 0 else max_height+1, reverse=True) # pop unconfirmed history to the top
+        # sort history by block height and pop unconfirmed history to the top
+        list_joined_history.sort(key=lambda x: x['height'] if x['height']!=0 else max_height+1, reverse=True)
         
-        '''second step'''
-        # get all transaction details by one rpc request
         tx_hashes = [ entry["tx_hash"] for entry in list_joined_history[query_from:query_to] ]
-        #tx_details = await self.transaction_get_multiple_details(tx_hashes)
-        tx_details = await asyncio.gather(*[ self.transaction_get_detail(hash) for hash in tx_hashes ])
+
+        tasks_fetch_data = []
+        for hash in tx_hashes:
+            tasks_fetch_data.append(self.transaction_get_detail(hash))
+            
+        tx_details = await asyncio.gather(*tasks_fetch_data)
         
         task_hist = []
         for hist, tx in zip(list_joined_history[query_from:query_to], tx_details):
@@ -180,9 +179,9 @@ class HttpHandler(object):
             # decode hashed transaction data
             vin_details.append(self.coin.DESERIALIZER(bytes).read_tx())
         
-        # extract specific output from input transaction detail
         prev_outs = []
         for i, d in enumerate(vin_details):
+            # extract specific output from input transaction detail
             if d is not None: prev_outs.append(d.outputs[vin_n[i]])
             else: prev_outs.append(None)
         
@@ -203,12 +202,8 @@ class HttpHandler(object):
                 }
 
         vout = tx["vout"]
-        
         value_in = round(Decimal(str(reduce(lambda sum, x: sum + x["value"], vin, 0))), self.prec)
         value_out = round(Decimal(str(reduce(lambda sum, x: sum + x["value"], vout, 0))), self.prec)
-        
-        if value_in > 0:
-            fees = value_in - value_out
         
         return {
             "txid": tx["txid"],
@@ -217,7 +212,7 @@ class HttpHandler(object):
             "vout": vout,
             "valueOut": value_out,
             "valueIn": value_in,
-            "fees": fees,
+            "fees": value_in - value_out,
             "confirmations": tx["confirmations"] if 'confirmations' in tx else 0,
             "time": time}
 
@@ -262,7 +257,7 @@ class HttpHandler(object):
         hashX = self.address_to_hashX(address)
         return await self.get_balance(hashX)
 
-    async def get_history_by_address(self, address):
+    async def get_history(self, address):
         '''Return the confirmed and unconfirmed history of an address.'''
         hashX = self.address_to_hashX(address)
         
