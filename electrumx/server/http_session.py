@@ -119,19 +119,18 @@ class HttpHandler(object):
             query_to = query_from + MAX_TX_QUERY
 
         top_level_tasks = []
-
         for addr in addrs.split(','):
             # define single address coroutine
             async def get_single_address_history(self, addr: str):
                 try:
-                    txid_list = await self.get_txid_list(addr)[query_from:query_to]
-                    tx_detail_list = await self.get_tx_detail_list(txid_list)
+                    txid_list = await self.get_txid_list(addr)
+                    tx_detail_list = await self.get_tx_detail_list(txid_list[query_from:query_to])
                     history = await self.history_factory(tx_detail_list)
                 except RPCError as error:
                     raise error
                 return {'address': addr, 'txs': history}
 
-            top_level_tasks.append(self.get_single_address_history(addr))
+            top_level_tasks.append(get_single_address_history(self, addr))
 
         try:
             results = await asyncio.gather(*top_level_tasks)
@@ -176,19 +175,21 @@ class HttpHandler(object):
 
     async def get_txid_list(self, addr):
         try:
-            hashX = self.address_to_hashX(address)
-            unconfirmed_list, confirmed_list = await asyncio.gather(self.get_unconfirmed_list(hashX), self.get_confirmed_list(hashX))
+            hashX = self.address_to_hashX(addr)
+            coro_u = self.get_unconfirmed_list(hashX)
+            coro_c = self.get_confirmed_list(hashX)
+            unconfirmed_list, confirmed_list = await asyncio.gather(coro_u, coro_c)
         except RPCError as error:
             raise error
         return unconfirmed_list + confirmed_list
 
     async def get_unconfirmed_list(self, hashX):
         unconfirmed_list = await self.mempool.transaction_summaries(hashX)
-        return [{'txid': hash_to_hex_str(tx.hash)} for tx in unconfirmed_list]
+        return [ hash_to_hex_str(tx.hash) for tx in unconfirmed_list]
 
     async def get_confirmed_list(self, hashX):
         confirmed_list = await self.session_mgr.history(hashX)
-        return [{'txid': hash_to_hex_str(tx_hash)} for tx_hash, height in list(reversed(confirmed_list))]
+        return [ hash_to_hex_str(tx_hash) for tx_hash, height in list(reversed(confirmed_list))]
 
     async def history_factory(self, tx_detail_list):
 
@@ -207,7 +208,7 @@ class HttpHandler(object):
                 # The time the transaction entered the memory pool, Unix epoch time format
                 mempool = await self.mempool_get(True)
                 tx = mempool.get(tx_detail.get('txid'))
-                self.logger.info(f"mempool get tx: {tx}")
+                # self.logger.info(f"mempool get tx: {tx}")
                 time = tx.get('time') if tx is not None else None
 
             if time is None:
@@ -223,7 +224,7 @@ class HttpHandler(object):
             prev_out_list = [ tx.outputs[n] for tx, n in zip(vin_tx_list, vin_idx_list) ]
             prev_out_value_list = [ out.value / self.coin.VALUE_PER_COIN for out in prev_out_list ]
             prev_out_script_list = [ codecs.encode(out.pk_script, 'hex').decode('ascii') for out in prev_out_list ]
-            script_detail_list = self.get_script_detail_list(prev_out_script_list)
+            script_detail_list = await self.get_script_detail_list(prev_out_script_list)
 
             # check prev output script type and retrieve addresses
             vin_addrs_list = self.get_addrs_from_script_list(script_detail_list)
@@ -237,7 +238,7 @@ class HttpHandler(object):
             vout_value_list = [ out.get('value') for out in tx_detail.get('vout') ]
             vout_script_list = [ out.get('scriptPubKey') for out in tx_detail.get('vout') ]
             vout_addrs_list = self.get_addrs_from_script_list(vout_script_list)
-            for addrs, value in zip(vout_addrs_list, vout_script_list):
+            for addrs, value in zip(vout_addrs_list, vout_value_list):
                 if addrs: # addr list indicates a valid transaction
                     final_vout_list.append({'addrs': addrs, 'value': value})
 
@@ -252,11 +253,11 @@ class HttpHandler(object):
                 "valueOut": value_out,
                 "valueIn": value_in,
                 "fees": value_in - value_out,
-                "confirmations": tx_detail.get('confirmations') if 'confirmations' in tx else 0,
+                "confirmations": tx_detail.get('confirmations', 0),
                 "time": time
             }
 
-        return asyncio.gather(*[ process_single_tx_record(tx_detail) for tx_detail in tx_detail_list ])
+        return await asyncio.gather(*[ process_single_tx_record(self, tx_detail) for tx_detail in tx_detail_list ])
 
         # async def history_factory(self, height, tx):
         #     #self.logger.info(f"txid: {tx.get('txid')} input: {str(tx.get('vin'))[:10]}\n")
@@ -324,7 +325,7 @@ class HttpHandler(object):
         #         "confirmations": tx["confirmations"] if 'confirmations' in tx else 0,
         #         "time": time}
 
-    async def get_addrs_from_script_list(self, script_list):
+    def get_addrs_from_script_list(self, script_list):
         addrs_list = []
         for s in script_list:
             if not s:
@@ -488,6 +489,18 @@ class HttpHandler(object):
     async def address_get_multiple(self, descriptors):
         return await self.daemon_request('getderiveaddresses', descriptors)
 
+
+    # new daemon calls
+    async def get_tx_raw_list(self, txid_list):
+        return await self.daemon_request('getrawtransactions', txid_list)
+
+    async def get_tx_detail_list(self, txid_list):
+        res = await self.daemon_request('getdetailedtransactions', txid_list)
+        return res
+
+    async def get_script_detail_list(self, script_list):
+        return await self.daemon_request('decode_scripts', script_list)
+
     async def mempool_get(self, verbose=False):
         '''Returns all transaction ids in memory pool as a json array of string transaction ids
 
@@ -497,7 +510,6 @@ class HttpHandler(object):
             raise RPCError(BAD_REQUEST, f'"verbose" must be a boolean')
 
         return await self.daemon_request('getrawmempool', verbose)
-
 
 class DecimalEncoder(json.JSONEncoder):
     def default(self, o):

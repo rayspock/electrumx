@@ -287,6 +287,14 @@ class Daemon(object):
         params_iterable = ((hex_hash, 1) for hex_hash in hex_hashes)
         return await self._send_vector('getrawtransaction', params_iterable, replace_errs=replace_errs)
     
+    async def decode_scripts(self, script_list, replace_errs=True):
+        '''
+        Decode a hex-encoded script.\n
+        Replaces errors with None by default.\n
+        '''
+        params_iterable = ((raw_script,) for raw_script in script_list)
+        return await self._send_vector('decodescript', params_iterable, replace_errs=replace_errs)
+
     async def getdescriptorsinfo(self, descriptors, script_type, replace_errs=True):
         params_iterable = ([f'{script_type}({descriptor})'] for descriptor in descriptors)
         return await self._send_vector('getdescriptorinfo', params_iterable, replace_errs=replace_errs)
