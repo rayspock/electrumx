@@ -37,7 +37,8 @@ class HttpHandler(object):
 
     async def estimatefee(self, request):
         query_str = request.rel_url.query
-        nb = util.parse_int(query_str['nbBlocks'], 2) if 'nbBlocks' in query_str else None
+        nb = util.parse_int(query_str['nbBlocks'],
+                            2) if 'nbBlocks' in query_str else None
         if nb is not None:
             fee = await self.daemon_request('estimatefee', nb)
         else:
@@ -87,134 +88,259 @@ class HttpHandler(object):
     async def history(self, request):
         '''
         The history api requries two step of querying to meet our use case.
-        The first step is to get pairs of tx_hash and block_height as history provided by electrumx.
-        The second step is to ask coin core for transaction details.
+        The first step is to fetch detail from txid records of specific address.
+        The second step is to resolve each inputs within a transaction.
         '''
         # path variable
-        addrs = request.match_info.get('addrs', '')
-        if not addrs:
+        addrs = request.match_info.get('addrs', None)
+        if addrs is None:
             return web.Response(status=404)
-        
+
         # query string
         query = request.rel_url.query
         query_from = util.parse_int(query['from'], 0)
-        query_to   = util.parse_int(query['to'], MAX_TX_QUERY)
-        
-        if query_from < 0:
-            return web.Response(
-                status=400,
-                text=f'Invalid parameter: "from" must be greater than or equal to 0')
+        query_to = util.parse_int(query['to'], MAX_TX_QUERY)
 
-        if query_to < 0:
-            return web.Response(
-                status=400,
-                text=f'Invalid parameter: "to" must be greater than or equal to 0')
-
-        if query_from > query_to:
-            return web.Response(
-                status=400,
-                text=f'Invalid parameter: "from" must be less than "to"')
+        # check pagination
+        try:
+            if query_from < 0:
+                raise ValueError(
+                    'query value "from" must be greater than or equal to 0')
+            if query_to < 0:
+                raise ValueError(
+                    'query value "to" must be greater than or equal to 0')
+            if query_from > query_to:
+                raise ValueError(
+                    'query value "from" must be less than query value "to"')
+        except ValueError as error:
+            return web.Response(status=400, text=str(error))
 
         if query_to > query_from + MAX_TX_QUERY:
             query_to = query_from + MAX_TX_QUERY
 
-        tasks_fetch_tuples = []
-        for addr in addrs.split(','):
-            # query electrumx history db
-            tasks_fetch_tuples.append(self.get_history(addr))
-            
-        list_history_by_address = await asyncio.gather(*tasks_fetch_tuples)
-        list_joined_history = [ entry for per_address in list_history_by_address for entry in per_address ]
-        
-        max_height = max([ entry['height'] for entry in list_joined_history ])
-        # sort history by block height and pop unconfirmed history to the top
-        list_joined_history.sort(key=lambda x: x['height'] if x['height']!=0 else max_height+1, reverse=True)
-        
-        tx_hashes = [ entry["tx_hash"] for entry in list_joined_history[query_from:query_to] ]
+        top_level_tasks = []
 
-        tasks_fetch_data = []
-        for hash in tx_hashes:
-            tasks_fetch_data.append(self.transaction_get_detail(hash))
-            
-        tx_details = await asyncio.gather(*tasks_fetch_data)
-        
-        task_hist = []
-        for hist, tx in zip(list_joined_history[query_from:query_to], tx_details):
-            task_hist.append(self.history_factory(hist['height'], tx))
-            
-        list_history = await asyncio.gather(*task_hist)
-        
-        response = {
-            "totalItems": len(list_joined_history),
-            "items": list_history,
-        }
-                
-        jsonStr = json.dumps(response, cls=DecimalEncoder)        
+        for addr in addrs.split(','):
+            # define single address coroutine
+            async def get_single_address_history(self, addr: str):
+                try:
+                    txid_list = await self.get_txid_list(addr)[query_from:query_to]
+                    tx_detail_list = await self.get_tx_detail_list(txid_list)
+                    history = await self.history_factory(tx_detail_list)
+                except RPCError as error:
+                    raise error
+                return {'address': addr, 'txs': history}
+
+            top_level_tasks.append(self.get_single_address_history(addr))
+
+        try:
+            results = await asyncio.gather(*top_level_tasks)
+        except RPCError as error:
+            return web.Response(status=500, text=str(error))
+
+        # tasks_fetch_tuples = []
+        # for addr in addrs.split(','):
+        #     # query electrumx history db
+        #     tasks_fetch_tuples.append(self.get_history(addr))
+
+        # list_history_by_address = await asyncio.gather(*tasks_fetch_tuples)
+        # list_joined_history = [ entry for per_address in list_history_by_address for entry in per_address ]
+
+        # max_height = max([ entry['height'] for entry in list_joined_history ])
+        # # sort history by block height and pop unconfirmed history to the top
+        # list_joined_history.sort(key=lambda x: x['height'] if x['height']!=0 else max_height+1, reverse=True)
+
+        # tx_hashes = [ entry["tx_hash"] for entry in list_joined_history[query_from:query_to] ]
+
+        # tasks_fetch_data = []
+        # for hash in tx_hashes:
+        #     tasks_fetch_data.append(self.transaction_get_detail(hash))
+
+        # tx_details = await asyncio.gather(*tasks_fetch_data)
+
+        # task_hist = []
+        # for hist, tx in zip(list_joined_history[query_from:query_to], tx_details):
+        #     task_hist.append(self.history_factory(hist['height'], tx))
+
+        # list_history = await asyncio.gather(*task_hist)
+
+        # response = {
+        #     "totalItems": len(list_joined_history),
+        #     "items": list_history,
+        # }
+
+        # jsonStr = json.dumps(response, cls=DecimalEncoder)
+
+        jsonStr = json.dumps(results, cls=DecimalEncoder)
         return web.json_response(json.loads(jsonStr))
 
-    async def history_factory(self, height, tx):
-                
-        if tx is None:
-            return None
-        
-        if 'time' in tx:
-            time = tx["time"]
-        else:
-            # This is unconfirmed transaction, so get the time from memory pool
-            # The time the transaction entered the memory pool, Unix epoch time format
-            mempool = await self.mempool_get(True)
-            tx = mempool.get(tx["txid"])
-            time = tx.get('time') if tx is not None else None
-                             
-        if time is None:
-            raise RPCError(BAD_REQUEST, f'cannot get the transaction\'s time')
-        
-        vin = tx["vin"]
-        vin_n = [ v.get('vout') for v in tx["vin"] ]
-        vin_hashes = [ v.get('txid') for v in tx["vin"] ]
+    async def get_txid_list(self, addr):
+        try:
+            hashX = self.address_to_hashX(address)
+            unconfirmed_list, confirmed_list = await asyncio.gather(self.get_unconfirmed_list(hashX), self.get_confirmed_list(hashX))
+        except RPCError as error:
+            raise error
+        return unconfirmed_list + confirmed_list
 
-        vin_details = []
-        list_vin_bytes = await self.transaction_get_multiple(vin_hashes)
-        for bytes in list_vin_bytes:
-            # decode hashed transaction data
-            vin_details.append(self.coin.DESERIALIZER(bytes).read_tx())
-        
-        prev_outs = []
-        for i, d in enumerate(vin_details):
-            # extract specific output from input transaction detail
-            if d is not None: prev_outs.append(d.outputs[vin_n[i]])
-            else: prev_outs.append(None)
-        
-        # convert hex bytes to text string
-        list_pk_script = [ codecs.encode(o.pk_script, 'hex').decode('ascii') for o in prev_outs ]
-        list_descriptor_info = await self.descriptorinfo_get_multiple(list_pk_script, 'raw')
-                
-        list_descriptor = [ info['descriptor'] for info in list_descriptor_info ]
-        list_address = await self.address_get_multiple(list_descriptor)
-        
-        for i in range(len(vin)):
-            if 'txid' in vin[i]:
-                vin[i] = {
-                    "txid": vin[i]["txid"],
-                    "addr": list_address[i][0],
-                    #"valueSat": prev_outs[i].value,
-                    "value": prev_outs[i].value / self.coin.VALUE_PER_COIN,
-                }
+    async def get_unconfirmed_list(self, hashX):
+        unconfirmed_list = await self.mempool.transaction_summaries(hashX)
+        return [{'txid': hash_to_hex_str(tx.hash)} for tx in unconfirmed_list]
 
-        vout = tx["vout"]
-        value_in = round(Decimal(str(reduce(lambda sum, x: sum + x["value"], vin, 0))), self.prec)
-        value_out = round(Decimal(str(reduce(lambda sum, x: sum + x["value"], vout, 0))), self.prec)
-        
-        return {
-            "txid": tx["txid"],
-            "blockheight": height,
-            "vin": vin,
-            "vout": vout,
-            "valueOut": value_out,
-            "valueIn": value_in,
-            "fees": value_in - value_out,
-            "confirmations": tx["confirmations"] if 'confirmations' in tx else 0,
-            "time": time}
+    async def get_confirmed_list(self, hashX):
+        confirmed_list = await self.session_mgr.history(hashX)
+        return [{'txid': hash_to_hex_str(tx_hash)} for tx_hash, height in list(reversed(confirmed_list))]
+
+    async def history_factory(self, tx_detail_list):
+
+        async def process_single_tx_record(self, tx_detail):
+            try:
+                if not tx_detail:
+                    raise RPCError(None, 'missing transaction detail')
+            except RPCError as error:
+                return {}
+
+            # get transaction time
+            if tx_detail.get('confirmations') is not None:
+                time = tx_detail.get('time')
+            else:
+                # This is unconfirmed transaction, so get the time from memory pool
+                # The time the transaction entered the memory pool, Unix epoch time format
+                mempool = await self.mempool_get(True)
+                tx = mempool.get(tx_detail.get('txid'))
+                self.logger.info(f"mempool get tx: {tx}")
+                time = tx.get('time') if tx is not None else None
+
+            if time is None:
+                raise RPCError(None, 'cannot get the transaction time')
+
+            # process vin to get values & addresses
+            vin_txid_list = [ i.get('txid') for i in tx_detail.get('vin', []) ]
+            vin_idx_list = [ i.get('vout') for i in tx_detail.get('vin', []) ]
+            vin_raw_list = await self.get_tx_raw_list(vin_txid_list)
+            vin_tx_list = [ self.coin.DESERIALIZER(bytes).read_tx() for bytes in vin_raw_list ]
+
+            # decode prev output script
+            prev_out_list = [ tx.outputs[n] for tx, n in zip(vin_tx_list, vin_idx_list) ]
+            prev_out_value_list = [ out.value / self.coin.VALUE_PER_COIN for out in prev_out_list ]
+            prev_out_script_list = [ codecs.encode(out.pk_script, 'hex').decode('ascii') for out in prev_out_list ]
+            script_detail_list = self.get_script_detail_list(prev_out_script_list)
+
+            # check prev output script type and retrieve addresses
+            vin_addrs_list = self.get_addrs_from_script_list(script_detail_list)
+
+            final_vin_list = []
+            for txid, addrs, value in zip(vin_txid_list, vin_addrs_list, prev_out_value_list):
+                if addrs: # addr list indicates a valid transaction
+                    final_vin_list.append({ 'txid': txid, 'addrs': addrs, 'value': value })
+
+            final_vout_list = []
+            vout_value_list = [ out.get('value') for out in tx_detail.get('vout') ]
+            vout_script_list = [ out.get('scriptPubKey') for out in tx_detail.get('vout') ]
+            vout_addrs_list = self.get_addrs_from_script_list(vout_script_list)
+            for addrs, value in zip(vout_addrs_list, vout_script_list):
+                if addrs: # addr list indicates a valid transaction
+                    final_vout_list.append({'addrs': addrs, 'value': value})
+
+            # total input/output amount
+            value_in = round(Decimal(str(reduce(lambda sum, x: sum + x["value"], final_vin_list, 0))), self.prec)
+            value_out = round(Decimal(str(reduce(lambda sum, x: sum + x["value"], final_vout_list, 0))), self.prec)
+
+            return {
+                "txid": tx_detail.get('txid'),
+                "vin": final_vin_list,
+                "vout": final_vout_list,
+                "valueOut": value_out,
+                "valueIn": value_in,
+                "fees": value_in - value_out,
+                "confirmations": tx_detail.get('confirmations') if 'confirmations' in tx else 0,
+                "time": time
+            }
+
+        return asyncio.gather(*[ process_single_tx_record(tx_detail) for tx_detail in tx_detail_list ])
+
+        # async def history_factory(self, height, tx):
+        #     #self.logger.info(f"txid: {tx.get('txid')} input: {str(tx.get('vin'))[:10]}\n")
+        #     if tx is None:
+        #         return None
+
+        #     if 'time' in tx:
+        #         time = tx["time"]
+        #     else:
+        #         # This is unconfirmed transaction, so get the time from memory pool
+        #         # The time the transaction entered the memory pool, Unix epoch time format
+        #         mempool = await self.mempool_get(True)
+        #         tx = mempool.get(tx["txid"])
+        #         self.logger.info(f"mempool get tx: {tx}")
+        #         time = tx.get('time') if tx is not None else None
+
+        #     if time is None:
+        #         raise RPCError(BAD_REQUEST, f'cannot get the transaction\'s time')
+        #     self.logger.info(f"txid: {tx.get('txid')}")
+        #     vin = tx["vin"]
+        #     vin_n = [ v.get('vout') for v in tx["vin"] ]
+        #     vin_hashes = [ v.get('txid') for v in tx["vin"] ]
+
+        #     vin_details = []
+        #     list_vin_bytes = await self.transaction_get_multiple(vin_hashes)
+        #     for bytes in list_vin_bytes:
+        #         # decode hashed transaction data
+        #         vin_details.append(self.coin.DESERIALIZER(bytes).read_tx())
+
+        #     prev_outs = []
+        #     for i, d in enumerate(vin_details):
+        #         # extract specific output from input transaction detail
+        #         if d is not None: prev_outs.append(d.outputs[vin_n[i]])
+        #         else: prev_outs.append(None)
+
+        #     # convert hex bytes to text string
+        #     self.logger.info(f'pkscript: {prev_outs[0].pk_script}')
+        #     list_pk_script = [ codecs.encode(o.pk_script, 'hex').decode('ascii') for o in prev_outs ]
+        #     list_descriptor_info = await self.descriptorinfo_get_multiple(list_pk_script, 'raw')
+
+        #     list_descriptor = [ info['descriptor'] for info in list_descriptor_info ]
+        #     list_address = await self.address_get_multiple(list_descriptor)
+
+        #     for i in range(len(vin)):
+        #         if 'txid' in vin[i]:
+        #             vin[i] = {
+        #                 "txid": vin[i]["txid"],
+        #                 "addr": list_address[i][0],
+        #                 #"valueSat": prev_outs[i].value,
+        #                 "value": prev_outs[i].value / self.coin.VALUE_PER_COIN,
+        #             }
+
+        #     vout = tx["vout"]
+        #     value_in = round(Decimal(str(reduce(lambda sum, x: sum + x["value"], vin, 0))), self.prec)
+        #     value_out = round(Decimal(str(reduce(lambda sum, x: sum + x["value"], vout, 0))), self.prec)
+
+        #     return {
+        #         "txid": tx["txid"],
+        #         "blockheight": height,
+        #         "vin": vin,
+        #         "vout": vout,
+        #         "valueOut": value_out,
+        #         "valueIn": value_in,
+        #         "fees": value_in - value_out,
+        #         "confirmations": tx["confirmations"] if 'confirmations' in tx else 0,
+        #         "time": time}
+
+    async def get_addrs_from_script_list(self, script_list):
+        addrs_list = []
+        for s in script_list:
+            if not s:
+                addrs_list.append(None)
+                continue
+            if s.get('addresses'):
+                addrs_list.append(s.get('addresses'))
+                continue
+            elif s.get('type') == 'nonstandard':
+                # might be segwit transaction
+                segwit = s.get('segwit')
+                if segwit and segwit.get('addresses'):
+                    addrs_list.append(segwit.get('addresses'))
+                    continue
+            addrs_list.append(None)
+        return addrs_list
 
     async def wallet_unspent(self, address, utxo, tx_detail):
         height = utxo["height"]
@@ -235,7 +361,8 @@ class HttpHandler(object):
             amount = obj["value"]
             script_pub_key = obj["scriptPubKey"]["hex"]
         else:
-            raise Exception(f'cannot get the transaction\'s list of outputs from address:{address}')
+            raise Exception(
+                f'cannot get the transaction\'s list of outputs from address:{address}')
         return {"address": address,
                 "txid": tx_detail["txid"],
                 "vout": vout,
@@ -260,12 +387,13 @@ class HttpHandler(object):
     async def get_history(self, address):
         '''Return the confirmed and unconfirmed history of an address.'''
         hashX = self.address_to_hashX(address)
-        
-        uth = await asyncio.create_task(self.unconfirmed_history(hashX))        
-        cth = await asyncio.create_task(self.session_mgr.history(hashX)) # list of tuple
-        cth = [{'height': height, 'tx_hash': hash_to_hex_str(tx_hash)} for tx_hash, height in cth ]
-        # cth.reverse() # make the result identical to the original one
 
+        uth = await asyncio.create_task(self.unconfirmed_history(hashX))
+        # list of tuple
+        cth = await asyncio.create_task(self.session_mgr.history(hashX))
+        cth = [{'height': height, 'tx_hash': hash_to_hex_str(
+            tx_hash)} for tx_hash, height in cth]
+        # cth.reverse() # make the result identical to the original one
         return uth + cth
 
     async def get_balance(self, hashX):
@@ -277,11 +405,13 @@ class HttpHandler(object):
     async def unconfirmed_history(self, hashX):
         # Note unconfirmed history is unordered in electrum-server
         # height is -1 if it has unconfirmed inputs, otherwise 0
+        uth = await self.mempool.transaction_summaries(hashX)
+        self.logger.info(uth)
         return [{
-            'fee': tx.fee,
+            # 'fee': tx.fee,
             'tx_hash': hash_to_hex_str(tx.hash),
             'height': -tx.has_unconfirmed_inputs,
-        } for tx in await self.mempool.transaction_summaries(hashX)]
+        } for tx in uth]
 
     async def confirmed_and_unconfirmed_history(self, hashX):
         '''latest in the blockchain first.'''
@@ -326,7 +456,7 @@ class HttpHandler(object):
             raise RPCError(BAD_REQUEST, f'"verbose" must be a boolean')
 
         return await self.daemon_request('getrawtransaction', tx_hash, verbose)
-    
+
     async def transaction_get_detail(self, tx_hash):
         '''
         Return the serialized raw transaction given its hash\n
@@ -335,7 +465,7 @@ class HttpHandler(object):
         '''
         self.assert_tx_hash(tx_hash)
         return await self.daemon_request('getrawtransaction', tx_hash, True)
-    
+
     async def transaction_get_multiple(self, tx_hashes):
         '''
         Return the a bunch of serialized raw transaction given hash values\n
@@ -343,7 +473,7 @@ class HttpHandler(object):
         verbose: passed on to the daemon;
         '''
         return await self.daemon_request('getrawtransactions', tx_hashes)
-    
+
     async def transaction_get_multiple_details(self, tx_hashes):
         '''
         Return the a bunch of serialized raw transaction given hash values\n
@@ -354,10 +484,10 @@ class HttpHandler(object):
 
     async def descriptorinfo_get_multiple(self, descriptors, script_type):
         return await self.daemon_request('getdescriptorsinfo', descriptors, script_type)
-        
+
     async def address_get_multiple(self, descriptors):
         return await self.daemon_request('getderiveaddresses', descriptors)
-    
+
     async def mempool_get(self, verbose=False):
         '''Returns all transaction ids in memory pool as a json array of string transaction ids
 
@@ -374,4 +504,3 @@ class DecimalEncoder(json.JSONEncoder):
         if isinstance(o, Decimal):
             return float(o)
         return super(DecimalEncoder, self).default(o)
-
