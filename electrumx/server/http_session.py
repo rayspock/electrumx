@@ -209,7 +209,7 @@ class HttpHandler(object):
             else:
                 # This is unconfirmed transaction, so get the time from memory pool
                 txid = tx_detail.get('txid')
-                async with self.mempool.lock:
+                async with self.mempool.data_lock:
                     memtx = self.mempool.detail.get(txid)
                 tx_time = memtx.get('time')
 

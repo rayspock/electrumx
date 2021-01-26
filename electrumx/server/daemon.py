@@ -230,10 +230,6 @@ class Daemon(object):
 
     async def mempool_hashes(self):
         '''Update our record of the daemon's mempool hashes.'''
-        return await self._send_single('getrawmempool')
-
-    async def mempool_detail(self):
-        '''Update mempool detail.'''
         return await self._send_single('getrawmempool', (True, ))
 
     async def getrawmempool(self, verbose=False):

@@ -108,7 +108,6 @@ class Controller(ServerBase):
             notifications.db_height = get_db_height
             notifications.cached_height = daemon.cached_height
             notifications.mempool_hashes = daemon.mempool_hashes
-            notifications.mempool_detail = daemon.mempool_detail
             notifications.raw_transactions = daemon.getrawtransactions
             notifications.lookup_utxos = db.lookup_utxos
             MemPoolAPI.register(Notifications)

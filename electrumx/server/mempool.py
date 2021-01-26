@@ -66,11 +66,6 @@ class MemPoolAPI(ABC):
         mempool, returned as a list.'''
 
     @abstractmethod
-    async def mempool_detail(self):
-        '''Query bitcoind for the detail of all transactions in its
-        mempool, returned as a list.'''
-
-    @abstractmethod
     async def raw_transactions(self, hex_hashes):
         '''Query bitcoind for the serialized raw transactions with the given
         hashes.  Missing transactions are returned as None.
@@ -119,6 +114,7 @@ class MemPool(object):
         self.log_status_secs = log_status_secs
         # Prevents mempool refreshes during fee histogram calculation
         self.lock = Lock()
+        self.data_lock = Lock()
 
     async def _logging(self, synchronized_event):
         '''Print regular logs of mempool stats.'''
@@ -222,6 +218,8 @@ class MemPool(object):
         while True:
             height = self.api.cached_height()
             hex_hashes = await self.api.mempool_hashes()
+            async with self.data_lock:
+                self.detail = hex_hashes
             if height != await self.api.height():
                 continue
             hashes = set(hex_str_to_hash(hh) for hh in hex_hashes)
@@ -237,13 +235,6 @@ class MemPool(object):
                 synchronized_event.clear()
                 await self.api.on_mempool(touched, height)
                 touched = set()
-            await sleep(self.refresh_secs)
-
-    async def _refresh_detail(self, synchronized_event):
-        while True:
-            await synchronized_event.wait()
-            async with self.lock:
-                self.detail = await self.api.mempool_detail()
             await sleep(self.refresh_secs)
 
     async def _process_mempool(self, all_hashes, touched, mempool_height):
@@ -344,7 +335,6 @@ class MemPool(object):
         '''Keep the mempool synchronized with the daemon.'''
         async with TaskGroup() as group:
             await group.spawn(self._refresh_hashes(synchronized_event))
-            await group.spawn(self._refresh_detail(synchronized_event))
             await group.spawn(self._refresh_histogram(synchronized_event))
             await group.spawn(self._logging(synchronized_event))
 
