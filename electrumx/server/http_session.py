@@ -126,6 +126,7 @@ class HttpHandler(object):
                     txid_list = await self.get_txid_list(addr)
                     tx_detail_list = await self.get_tx_detail_list(txid_list[query_from:query_to])
                     history = await self.history_factory(tx_detail_list)
+                    history.sort(key=lambda tx: tx.get('time'), reverse=True)
                 except RPCError as error:
                     raise error
                 return {'address': addr, 'txs': history}
@@ -179,17 +180,19 @@ class HttpHandler(object):
             coro_u = self.get_unconfirmed_list(hashX)
             coro_c = self.get_confirmed_list(hashX)
             unconfirmed_list, confirmed_list = await asyncio.gather(coro_u, coro_c)
+            self.logger.info(f"unconfirmed: {unconfirmed_list}")
+            self.logger.info(f"confirmed: {confirmed_list}")
         except RPCError as error:
             raise error
         return unconfirmed_list + confirmed_list
 
     async def get_unconfirmed_list(self, hashX):
         unconfirmed_list = await self.mempool.transaction_summaries(hashX)
-        return [ hash_to_hex_str(tx.hash) for tx in unconfirmed_list]
+        return [ hash_to_hex_str(tx.hash) for tx in unconfirmed_list ]
 
     async def get_confirmed_list(self, hashX):
         confirmed_list = await self.session_mgr.history(hashX)
-        return [ hash_to_hex_str(tx_hash) for tx_hash, height in list(reversed(confirmed_list))]
+        return [ hash_to_hex_str(tx_hash) for tx_hash, height in list(reversed(confirmed_list)) ]
 
     async def history_factory(self, tx_detail_list):
 
@@ -202,16 +205,15 @@ class HttpHandler(object):
 
             # get transaction time
             if tx_detail.get('confirmations') is not None:
-                time = tx_detail.get('time')
+                tx_time = tx_detail.get('time')
             else:
                 # This is unconfirmed transaction, so get the time from memory pool
-                # The time the transaction entered the memory pool, Unix epoch time format
-                mempool = await self.mempool_get(True)
-                tx = mempool.get(tx_detail.get('txid'))
-                # self.logger.info(f"mempool get tx: {tx}")
-                time = tx.get('time') if tx is not None else None
+                txid = tx_detail.get('txid')
+                async with self.mempool.lock:
+                    memtx = self.mempool.detail.get(txid)
+                tx_time = memtx.get('time')
 
-            if time is None:
+            if tx_time is None:
                 raise RPCError(None, 'cannot get the transaction time')
 
             # process vin to get values & addresses
@@ -223,7 +225,8 @@ class HttpHandler(object):
             # decode prev output script
             prev_out_list = [ tx.outputs[n] for tx, n in zip(vin_tx_list, vin_idx_list) ]
             prev_out_value_list = [ out.value / self.coin.VALUE_PER_COIN for out in prev_out_list ]
-            prev_out_script_list = [ codecs.encode(out.pk_script, 'hex').decode('ascii') for out in prev_out_list ]
+            # covert bytes to hex string to allow further json encoding
+            prev_out_script_list = [ bytes(out.pk_script).hex() for out in prev_out_list ]
             script_detail_list = await self.get_script_detail_list(prev_out_script_list)
 
             # check prev output script type and retrieve addresses
@@ -254,7 +257,7 @@ class HttpHandler(object):
                 "valueIn": value_in,
                 "fees": value_in - value_out,
                 "confirmations": tx_detail.get('confirmations', 0),
-                "time": time
+                "time": tx_time
             }
 
         return await asyncio.gather(*[ process_single_tx_record(self, tx_detail) for tx_detail in tx_detail_list ])

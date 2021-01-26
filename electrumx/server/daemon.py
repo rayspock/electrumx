@@ -43,7 +43,7 @@ class Daemon(object):
     WARMING_UP = -28
     id_counter = itertools.count()
 
-    def __init__(self, coin, url, *, max_workqueue=16, init_retry=0.25, max_retry=4.0):
+    def __init__(self, coin, url, *, max_workqueue=1024, init_retry=0.25, max_retry=4.0):
         self.coin = coin
         self.logger = class_logger(__name__, self.__class__.__name__)
         self.url_index = None
@@ -231,6 +231,10 @@ class Daemon(object):
     async def mempool_hashes(self):
         '''Update our record of the daemon's mempool hashes.'''
         return await self._send_single('getrawmempool')
+
+    async def mempool_detail(self):
+        '''Update mempool detail.'''
+        return await self._send_single('getrawmempool', (True, ))
 
     async def getrawmempool(self, verbose=False):
         return await self._send_single('getrawmempool', [verbose])

@@ -66,6 +66,11 @@ class MemPoolAPI(ABC):
         mempool, returned as a list.'''
 
     @abstractmethod
+    async def mempool_detail(self):
+        '''Query bitcoind for the detail of all transactions in its
+        mempool, returned as a list.'''
+
+    @abstractmethod
     async def raw_transactions(self, hex_hashes):
         '''Query bitcoind for the serialized raw transactions with the given
         hashes.  Missing transactions are returned as None.
@@ -108,6 +113,7 @@ class MemPool(object):
         self.logger = class_logger(__name__, self.__class__.__name__)
         self.txs = {}
         self.hashXs = defaultdict(set)  # None can be a key
+        self.detail = defaultdict(set)
         self.cached_compact_histogram = []
         self.refresh_secs = refresh_secs
         self.log_status_secs = log_status_secs
@@ -233,6 +239,13 @@ class MemPool(object):
                 touched = set()
             await sleep(self.refresh_secs)
 
+    async def _refresh_detail(self, synchronized_event):
+        while True:
+            await synchronized_event.wait()
+            async with self.lock:
+                self.detail = await self.api.mempool_detail()
+            await sleep(self.refresh_secs)
+
     async def _process_mempool(self, all_hashes, touched, mempool_height):
         # Re-sync with the new set of hashes
         txs = self.txs
@@ -331,6 +344,7 @@ class MemPool(object):
         '''Keep the mempool synchronized with the daemon.'''
         async with TaskGroup() as group:
             await group.spawn(self._refresh_hashes(synchronized_event))
+            await group.spawn(self._refresh_detail(synchronized_event))
             await group.spawn(self._refresh_histogram(synchronized_event))
             await group.spawn(self._logging(synchronized_event))
 
